@@ -11,6 +11,8 @@ Sheet2 should include experimental data from each sample needed to be tested. St
 
 ## Usage
 
+Open Deconvolution.R in R.
+
 Make sure input files are in the correct format and location (ie. change file location to where DeconvInput.xlsx is).
 
 Output file should include pearson correlation values and p-values. 
