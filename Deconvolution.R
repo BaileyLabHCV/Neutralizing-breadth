@@ -2,12 +2,12 @@ library(lsei)
 library(xlsx)
 library(tidyverse)
 
-rankVectorAbMatrix <-readxl::read_excel("~/Desktop/DeconvInput.xlsx", sheet = 1)
+rankVectorAbMatrix <-readxl::read_excel("~/Desktop/DeconvInput.xlsx", sheet = 1) #replace file location with correct one
 num_Abs <- dim(rankVectorAbMatrix)[2]
 strains <-rankVectorAbMatrix[,1]
 rankVectorAbMatrix<-as.matrix(rankVectorAbMatrix[,2:num_Abs])
 
-ApproximationLists <-readxl::read_excel("~/Desktop/DeconvInput.xlsx", sheet = 2)
+ApproximationLists <-readxl::read_excel("~/Desktop/DeconvInput.xlsx", sheet = 2) #replace file location with correct one
 
 num_Tests <- dim(ApproximationLists)[2]
 ApproximationLists<-column_to_rownames(ApproximationLists, "strain")
@@ -33,4 +33,4 @@ for (num in seq(1, num_Tests-1, by=1)) {
   resultList <- append(resultList, c(pearson[[1]], p.value))
   df[num, ] <- resultList
 }
-write.xlsx(df, "~/Desktop/DeconvResults.xlsx", row.names = FALSE)
+write.xlsx(df, "~/Desktop/DeconvResults.xlsx", row.names = FALSE) #replace file location with desired output location
