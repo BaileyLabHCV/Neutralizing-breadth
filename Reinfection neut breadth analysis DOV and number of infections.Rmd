@@ -1,0 +1,1094 @@
+---
+title: "Reinfection Nuet Breadth Analysis"
+output: html_document
+code_folding: hide
+df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+library(readxl)
+library(dplyr)
+library(ggplot2)
+library(cowplot)
+```
+
+## Read in data
+- Read in the data from table. The table was reorganized that there are no merged cells. Each row contains a full record of the patients.
+```{r, warning=FALSE, message=FALSE}
+
+neut_breadth <- read_excel("reinfection_neut_breadth_table3.xlsx")
+print(neut_breadth)
+```
+
+## Data cleaning and grouping
+- We divided the data set into two subsets. The first subset contains the information of the persist patients. The other one contains the information of the clear patients. 
+
+```{r}
+neut_first = neut_breadth[neut_breadth$`Infxn #` == 1,]
+neut_re = neut_breadth[neut_breadth$`Infxn #` != 1,]
+
+# 1st infection persist 
+neut_first_persist_raw = neut_breadth[, -(1:8)]
+colnames(neut_first_persist_raw) = NULL
+neut_first_persist = neut_first_persist_raw[, 3:6]
+colnames(neut_first_persist) = c('days', 'number', 'breadth', 'potency')
+
+for (i in 1:3) {
+  colnames(neut_first_persist_raw)[ (6 * i + 3):(6 * i + 6)] = c('days', 'number', 'breadth', 'potency')
+  neut_first_persist = bind_rows(neut_first_persist, 
+                                     neut_first_persist_raw[, (6 * i + 3):(6 * i + 6)])
+}
+
+neut_first_persist = neut_first_persist[complete.cases(neut_first_persist), ]
+neut_first_persist$group = 1
+neut_first_persist$days = neut_first_persist$days/100
+
+#	1st infection clear
+neut_first_clear = neut_first[neut_first$`Outcome of infxn` == 'clear', 5:8]
+colnames(neut_first_clear) = c('days', 'number', 'breadth', 'potency')
+neut_first_clear$group = 2
+neut_first_clear$days = neut_first_clear$days/100
+
+#	Reinfection persist
+neut_re_persist = neut_re[neut_re$`Outcome of infxn` == 'persist', 5:8]
+colnames(neut_re_persist) = c('days', 'number', 'breadth', 'potency')
+neut_re_persist$group = 1
+neut_re_persist$days = neut_re_persist$days/100
+
+#	Reinfection clear
+neut_re_clear = neut_re[neut_re$`Outcome of infxn` == 'clear', 5:8]
+colnames(neut_re_clear) = c('days', 'number', 'breadth', 'potency')
+neut_re_clear$group = 2
+neut_re_clear$days = neut_re_clear$days/100
+
+
+
+ 
+```
+
+# Breadth Analysis
+
+- We assemble the 4 groups and scale the number of days infected. Now this variable is measured in 100 days/unit. Then we will conduct the regression analysis.
+```{r}
+neut_data = bind_rows(neut_first_clear, 
+                              neut_first_persist,
+                              neut_re_clear,
+                              neut_re_persist)
+
+neut_data$group = as.factor(neut_data$group)
+neut_persist = neut_data[neut_data$group == 1,]
+neut_clear = neut_data[neut_data$group == 2,]
+```
+
+## Model secification and fitting
+- Now we conduct the regression analysis. We assume the log grow rate or the grow rate of neutralization breadth is a constant with respect to the days infected. The rate is associated with the infection status and number of distinct infections. This assumption lead to 2 models: poisson regression and linear regression. The mathematical form of the models can be expressed as follows:
+
+\begin{aligned}
+
+&Poisson model: \\
+
+&log(E[breadth|number, days, group]) = \beta_0 + \beta_1 * number + \beta_2 * days + \beta_3 * group \\
+
+&Linear model: \\
+
+&E[breadth|days, number, group] = \beta_0 + \beta_1 * number + \beta_2 * days + \beta_3 * group \\
+
+\end{aligned}
+
+First, we examine the necessity for group. To verify this, F-test is conducted and p-values are given below.
+```{r}
+# Test for poisson extended model and null model
+neut_breadth_fit = glm(breadth ~ number+days+group, data = neut_data, family = quasipoisson)
+neut_breadth_fit_null = glm(breadth ~ number+days, data = neut_data, family = quasipoisson)
+
+extended_rss_glm = summary(neut_breadth_fit)$deviance
+extended_df_glm = summary(neut_breadth_fit)$df.residual
+
+null_rss_glm = summary(neut_breadth_fit_null)$deviance
+null_df_glm = summary(neut_breadth_fit_null)$df.residual
+
+f.stat.glm = (null_rss_glm - extended_rss_glm)/(null_df_glm - extended_df_glm)/(extended_rss_glm/extended_df_glm)
+breadth.pf = pf(f.stat.glm, null_df_glm - extended_df_glm, null_df_glm, lower.tail = FALSE)
+breadth.pf
+
+```
+
+
+```{r}
+# Test for linear extended model and null model
+
+# Breadth
+neut_breadth_lmfit = lm(breadth ~ number+days+group, data = neut_data)
+neut_breadth_lmfit_null = lm(breadth ~ number+days, data = neut_data)
+
+extended_rss_lm = sum(neut_breadth_lmfit$residuals^2)
+extended_df_lm = summary(neut_breadth_lmfit)$df[2]
+
+null_rss_lm = sum(neut_breadth_lmfit_null$residuals^2)
+null_df_lm = summary(neut_breadth_lmfit_null)$df[2]
+
+f.stat.lm = (null_rss_lm - extended_rss_lm)/(null_df_lm - extended_df_lm)/(extended_rss_lm/extended_df_lm)
+breadth.pf.lm = pf(f.stat.lm, null_df_lm - extended_df_lm, null_df_lm, lower.tail = FALSE)
+breadth.pf.lm
+
+```
+
+
+
+
+
+For both poisson regression model and linear regression model, the p-values for f.test are greater than 0.05. The null model without the group interaction will be applied for model checking and prediction. 
+
+\begin{aligned}
+&Poisson model: \\
+
+&log(E[breadth|number, days, group]) = \beta_0 + \beta_1 * number + \beta_2 * days \\
+
+&Linear model: \\
+
+&E[breadth|number, days, group] = \beta_0 + \beta_1 * number + \beta_2 * days \\
+\end{aligned}
+
+## Model checking
+
+```{r echo=FALSE}
+modelcheck.p1 <- ggplot(data = neut_breadth_fit_null$model, aes(x = neut_breadth_fit_null$fitted.values, y = summary(neut_breadth_fit_null)$deviance.resid)) +
+    geom_point() +
+    xlab('Fitted value ') +
+    ylab('Residual') +
+    ggtitle('Breadth Model Checking (Poisson)') + 
+    theme(text = element_text(size = 16, family = 'sans')) +
+    ylim(-12, 12)
+
+modelcheck.p2 <- ggplot(data = neut_breadth_lmfit_null$model, aes(x = neut_breadth_lmfit_null$fitted.values, y = summary(neut_breadth_lmfit_null)$resid)) +
+    geom_point() +
+    xlab('Fitted value ') +
+    ylab('Residual') +
+    ggtitle('Breadth Model Checking (Linear)') + 
+    theme(text = element_text(size = 16, family = 'sans'))+
+    ylim(-12, 12)
+
+```
+
+```{r include=FALSE}
+png('breadth_modelchecking.png', width = 960, height = 480)
+plot_grid(modelcheck.p1, modelcheck.p2, ncol = 2)
+dev.off()
+```
+
+
+![Breadth Model Checking](breadth_modelchecking.png)
+
+The residuals of both models are symmetric and scattered.  There are no obvious trend or concentration of the residuals. Therefore, both model fit the data well. Besides, the residuals of the poisson regression model have smaller variance. This indicates that the poisson model performs better than linear model. Therefore, the poisson model is applied for prediction:
+\begin{aligned}
+&Poisson model: \\
+
+&log(E[breadth|number, days, group]) = \beta_0 + \beta_1 * number + \beta_2 * days \\
+ \end{aligned}
+
+## Poisson prediction
+```{r warning=FALSE, include=FALSE}
+pois.pred <- function(df = neut_data, fit.model = neut_breadth_fit_null, upper = 19, lower = 0){
+pframe <- unique(with(df,
+             expand.grid(number=seq(min(number),max(number),by=1),
+                         days=seq(min(days, 0),max(days, 25),by=0.02))))
+# Breadth glm prediction 
+predict.breadth <- predict(fit.model,newdata=pframe, se.fit=TRUE, type = 'response')
+
+# Prediction
+pframe$breadth = predict.breadth$fit
+pframe$breadth[pframe$breadth > upper] = upper
+
+# 95% CI Upper 
+pframe$br.upr = predict.breadth$fit + 1.96 * predict.breadth$se.fit
+pframe$br.upr[pframe$br.upr > upper] = upper
+pframe$br.upr[pframe$br.upr < lower] = lower
+
+# 95% CI Lower 
+pframe$br.lwr = predict.breadth$fit - 1.96 * predict.breadth$se.fit
+pframe$br.lwr[pframe$br.lwr > upper] = upper
+pframe$br.lwr[pframe$br.lwr < lower] = lower
+
+# Plot of data and prediction, 95% CI
+pp <- ggplot(df, aes(days, breadth, col = as.factor(number))) +
+   geom_point() +
+   geom_line(data = pframe, aes(y = breadth)) +
+  geom_ribbon(data = pframe, aes(ymin = br.lwr, ymax = br.upr, fill = as.factor(number), color = NULL), alpha = .2, show.legend = FALSE) +
+  labs(color = 'Number of \ninfections') +
+  xlim(0, 25) + 
+  xlab('Days of viremia (100 days/unit)') +
+  ylab('Breadth (# of HCVpp neutralized > 25%)') + 
+  ylim(lower, upper * 1.1) +
+  theme(text = element_text(size = 16, family = 'sans'))
+
+return(pp)
+}
+pois.pred2 <- function(df = neut_data, fit.model = neut_div_breadth_fit, upper = 19, lower = 0, numbers = 1){
+pframe <- unique(with(df,
+             expand.grid(number = numbers,
+                         days = seq(min(days, 0),max(days, 25),by = 0.02))))
+# Breadth glm prediction 
+predict.breadth <- predict(fit.model,newdata=pframe, se.fit=TRUE, type = 'response')
+# Prediction
+pframe$breadth = predict.breadth$fit
+pframe$breadth[pframe$breadth > upper] = upper
+
+# 95% CI Upper 
+pframe$br.upr = predict.breadth$fit + 1.96 * predict.breadth$se.fit
+pframe$br.upr[pframe$br.upr > upper] = upper
+pframe$br.upr[pframe$br.upr < lower] = lower
+
+# 95% CI Lower 
+pframe$br.lwr = predict.breadth$fit - 1.96 * predict.breadth$se.fit
+pframe$br.lwr[pframe$br.lwr > upper] = upper
+pframe$br.lwr[pframe$br.lwr < lower] = lower
+
+# Plot of data and prediction, 95% CI
+pp <- ggplot(df[df$number == numbers, ], aes(days, breadth, col = as.factor(numbers))) +
+   geom_point() +
+   geom_line(data = pframe, aes(y = breadth)) +
+   geom_ribbon(data = pframe, aes(ymin = br.lwr, ymax = br.upr, fill = as.factor(numbers), color = NULL), alpha = .2, show.legend = FALSE) +
+   labs(color = 'Number of \ninfections') +
+  xlim(0, 25) + 
+  xlab('Days of viremia (100 days/unit)') +
+  ylab('Breadth (# of HCVpp neutralized > 25%)') + 
+  ylim(lower, upper * 1.1) +
+  theme(text = element_text(size = 16, family = 'sans'))
+
+return(pp)
+}
+
+```
+
+
+### Expected breadth(curves and 95% confidence interval for each number of infection
+
+```{r echo=FALSE}
+br.pois.p1 <- pois.pred(df = neut_data, fit.model = neut_breadth_fit_null, upper = 19, lower = 0) +
+  annotate(geom = 'text', x = 0, y = 20, label = 'F-test for extended model with \'group\' ', hjust = 0, size = 6) +
+  annotate(geom = 'text', x = 0, y = 18, label = paste('p-value:', round(breadth.pf, 2)), hjust = 0, size = 6)
+
+br.poi.p1.1 <- pois.pred2(df = neut_data, fit.model = neut_breadth_fit_null, upper = 19, lower = 0, numbers = 1)
+br.poi.p1.2 <- pois.pred2(df = neut_data, fit.model = neut_breadth_fit_null, upper = 19, lower = 0, numbers = 2)
+br.poi.p1.3 <- pois.pred2(df = neut_data, fit.model = neut_breadth_fit_null, upper = 19, lower = 0, numbers = 3)
+br.poi.p1.4 <- pois.pred2(df = neut_data, fit.model = neut_breadth_fit_null, upper = 19, lower = 0, numbers = 4)
+br.poi.p1.5 <- pois.pred2(df = neut_data, fit.model = neut_breadth_fit_null, upper = 19, lower = 0, numbers = 5)
+
+```
+
+
+```{r include=FALSE}
+png('breadth_prediction.png', width = 1440, height = 960)
+plot_grid(br.pois.p1, br.poi.p1.1, br.poi.p1.2, br.poi.p1.3, br.poi.p1.4, br.poi.p1.5, ncol = 3, labels ='AUTO')
+dev.off()
+
+```
+
+![Breadth Analysis](breadth_prediction.png)
+
+## Interpretation
+
+```{r}
+summary(neut_breadth_fit_null)$coefficients
+exp(summary(neut_breadth_fit_null)$coefficients[,1])
+```
+
+```{r, eval=FALSE, include=FALSE}
+
+var.cov = summary(neut_breadth_fit_null)$cov.scaled
+beta = neut_breadth_fit_null$coefficients
+
+
+log_lincomCI = function(w, beta1 = beta, var.cov1 = var.cov){
+  esti = t(w) %*% beta1
+  stderr = t(w) %*% var.cov1 %*% w
+  confidenceinterval = esti[1] + c(-1.96, 1.96)*stderr[1]
+  coef.esti = round(exp(esti[1]),4)
+  CI = exp(confidenceinterval)
+  CI = round(CI, 4)
+  print(paste0(coef.esti,'(', CI[1], ', ',CI[2],')'))
+}
+
+# start point
+w = rep(0, 3)
+w[2] = 1
+w[1] = 1
+log_lincomCI(w)
+
+log_lincomCI(w)
+
+
+# number effect
+w = rep(0, 3)
+w[2] = 1
+log_lincomCI(w)
+
+
+# time effect
+w = rep(0, 3)
+w[3] = 1
+log_lincomCI(w)
+
+
+```
+
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; The table below shows the estimated coefficients and 95% confidence interval. The effect coefficients are all times coefficients compared with the groups' start points.
+
+|    breadth    |    estimate (95% CI)   |
+|:-------------:|:----------------------:|
+|  start point  | 3.0692(2.9229, 3.2228) |
+| number effect | 1.2478(1.2269, 1.2691) |
+|  time effect  | 1.0975(1.0970, 1.0979) |
+
+- Now we interpret the coefficients of the poisson regression. We choose the patients infected and the disease persist (group 1) as the example. The expected breadth at the first day of infection, theoretically, is $3.07$. We refer this as start point. For each more time infected, the start point will be $1.25$ times than the previous one. This is number effect. Then we look at how the breadth changes as time pass. For each 100 days, the expected breadth will be $1.10$ times than the previous one. We call this time effect. With these coefficients, we can estimate the breath of the patients in group 1. For example, a patient in group 1 is infected for the second time and for 900 days. The expected neutralization breadth is $3.07 \times 1.25^{(2-1)} \times 1.10^{900/100} = 9.05$.
+
+
+
+
+
+# Breadth Analysis with Divergence
+
+```{r message=FALSE, warning=FALSE}
+neut = read_excel("reinfection_neut_breadth_table_with_divergence.xlsx")
+neut = neut[, 3:8]
+neut = neut[complete.cases(neut),]
+colnames(neut) = c('group', 'days', 'number','divergence','breadth', 'potency')
+neut$days = neut$days/100
+```
+
+## All Data
+Take al the data and fit two poisson models:
+
+\begin{aligned}
+
+&log(E[breadth|days, number, divergence]) = \beta_0 + \beta_1 * number + \beta_2 * days + \beta_3 * divergence \\
+
+&log(E[breadth|days, number]) = \beta_0 + \beta_1 * number + \beta_2 * days \\
+
+\end{aligned}
+
+Compare the two models by conducting a F-test. Determining whether divergence is significant.
+```{r}
+neut_div_breadth_fit = glm(breadth ~ number + days + divergence, data = neut, family = quasipoisson)
+neut_div_breadth_fit_null = glm(breadth ~ number + days, data = neut, family = quasipoisson)
+
+extended_rss_glm = summary(neut_div_breadth_fit)$deviance
+extended_df_glm = summary(neut_div_breadth_fit)$df.residual
+
+null_rss_glm = summary(neut_div_breadth_fit_null)$deviance
+null_df_glm= summary(neut_div_breadth_fit_null)$df.residual
+
+f.stat.glm = (null_rss_glm - extended_rss_glm)/(null_df_glm - extended_df_glm)/(extended_rss_glm/extended_df_glm)
+breadth_div_pf = pf(f.stat.glm, null_df_glm - extended_df_glm, extended_df_glm, lower.tail = FALSE)
+breadth_div_pf
+```
+
+The p-value is 0.85, greater than 0.05. Therefore, there is no enough evidence that including divergence in the model significantly improves the prediction. To further illustrate this, we use the model with divergence to make predictions.
+
+## Prediction
+```{r include=FALSE}
+pois.pred.div1<- function(df = neut_data, fit.model = neut_div_breadth_fit, upper = 19, lower = 0){
+pframe <- unique(with(df,
+             expand.grid(number = seq(min(number),max(number),by=1),
+                         divergence = seq(0, 1,by = 0.01),
+                         days = 5)))
+# Breadth glm prediction 
+predict.breadth <- predict(fit.model,newdata=pframe, se.fit=TRUE, type = 'response')
+# Prediction
+pframe$breadth = predict.breadth$fit
+pframe$breadth[pframe$breadth > upper] = upper
+
+# 95% CI Upper 
+pframe$br.upr = predict.breadth$fit + 1.96 * predict.breadth$se.fit
+pframe$br.upr[pframe$br.upr < lower] = lower
+pframe$br.upr[pframe$br.upr > upper] = upper
+
+# 95% CI Lower 
+pframe$br.lwr = predict.breadth$fit - 1.96 * predict.breadth$se.fit
+pframe$br.lwr[pframe$br.lwr < lower] = lower
+pframe$br.lwr[pframe$br.lwr > upper] = upper
+
+# Plot of data and prediction, 95% CI
+pp <- ggplot(df, aes(divergence*100, breadth, col = as.factor(number))) +
+   geom_point() +
+   geom_line(data = pframe, aes(y = breadth)) +
+  geom_ribbon(data = pframe, aes(ymin = br.lwr, ymax = br.upr, fill = as.factor(number), color = NULL), alpha = .2, show.legend = FALSE) +
+  labs(color = 'Number of \ninfections') +
+  xlim(0, 100) + 
+  xlab('Divergence from infection 1 T/F (%)') +
+  ylab('Breadth (# of HCVpp neutralized > 25%)') + 
+  ylim(lower, upper * 1.1) +
+  theme(text = element_text(size = 16, family = 'sans'))
+
+return(pp)
+}
+
+
+pois.pred.div2<- function(df = neut_data, fit.model = neut_div_breadth_fit, upper = 19, lower = 0, numbers = 1){
+pframe <- unique(with(df,
+             expand.grid(number = numbers,
+                         divergence = seq(0, 1, by = 0.01),
+                         days = 5)))
+# Breadth glm prediction 
+predict.breadth <- predict(fit.model,newdata=pframe, se.fit=TRUE, type = 'response')
+
+# Prediction
+pframe$breadth = predict.breadth$fit
+pframe$breadth[pframe$breadth > upper] = upper
+
+# 95% CI Upper 
+pframe$br.upr = predict.breadth$fit + 1.96 * predict.breadth$se.fit
+pframe$br.upr[pframe$br.upr < lower] = lower
+pframe$br.upr[pframe$br.upr > upper] = upper
+
+# 95% CI Lower 
+pframe$br.lwr = predict.breadth$fit - 1.96 * predict.breadth$se.fit
+pframe$br.lwr[pframe$br.lwr < lower] = lower
+pframe$br.lwr[pframe$br.lwr > upper] = upper
+
+# Plot of data and prediction, 95% CI
+pp <- ggplot(df[df$number == numbers, ], aes(divergence*100, breadth, col = as.factor(numbers))) +
+   geom_point() +
+   geom_line(data = pframe, aes(y = breadth)) +
+   geom_ribbon(data = pframe, aes(ymin = br.lwr, ymax = br.upr, fill = as.factor(numbers), color = NULL), alpha = .2, show.legend = FALSE) +
+   labs(color = 'Number of \ninfections') +
+  xlim(0, 100) + 
+  xlab('Divergence from infection 1 T/F (%)') +
+  ylab('Breadth (# of HCVpp neutralized > 25%)') + 
+  ylim(lower, upper * 1.1) +
+  theme(text = element_text(size = 16, family = 'sans'))
+
+return(pp)
+}
+```
+
+### Expected breadth with divergence, 500 days of infection(curves and 95% confidence interval for each number of infection)
+
+```{r echo=FALSE}
+div.poi.p <- pois.pred.div1(df = neut, fit.model = neut_div_breadth_fit, upper = 19, lower = 0) +
+  annotate(geom = 'text', x = 0, y = 20, label = 'F-test for extended model with \'divergence\' ', hjust = 0, size = 6) +
+  annotate(geom = 'text', x = 0, y = 18, label = paste('p-value:', round(breadth_div_pf, 2)), hjust = 0, size = 6) 
+
+div.poi.p1 <- pois.pred.div2(df = neut, fit.model = neut_div_breadth_fit, upper = 19, lower = 0, numbers = 1)
+div.poi.p2 <- pois.pred.div2(df = neut, fit.model = neut_div_breadth_fit, upper = 19, lower = 0, numbers = 2)
+div.poi.p3 <- pois.pred.div2(df = neut, fit.model = neut_div_breadth_fit, upper = 19, lower = 0, numbers = 3)
+div.poi.p4 <- pois.pred.div2(df = neut, fit.model = neut_div_breadth_fit, upper = 19, lower = 0, numbers = 4)
+div.poi.p5 <- pois.pred.div2(df = neut, fit.model = neut_div_breadth_fit, upper = 19, lower = 0, numbers = 5)
+
+```
+
+```{r include=FALSE}
+png('breadth_prediction_divergence_all.png', width = 1440, height = 960)
+plot_grid(div.poi.p, div.poi.p1, div.poi.p2, div.poi.p3, div.poi.p4, div.poi.p5, ncol = 3, labels ='AUTO')
+dev.off()
+
+```
+
+![Breadth Analysis with Divergence All Group](breadth_prediction_divergence_all.png)
+
+The days of infection is set at 500. The expected breadth doesn't change much as divegence increases
+
+
+
+## Coefficient Table
+```{r, eval=FALSE, include=FALSE}
+
+var.cov = summary(neut_div_breadth_fit)$cov.scaled
+beta = neut_div_breadth_fit$coefficients
+
+
+log_lincomCI = function(w, beta1 = beta, var.cov1 = var.cov){
+  esti = t(w) %*% beta1
+  stderr = t(w) %*% var.cov1 %*% w
+  confidenceinterval = esti[1] + c(-1.96, 1.96)*stderr[1]
+  coef.esti = round(exp(esti[1]),4)
+  CI = exp(confidenceinterval)
+  CI = round(CI, 4)
+  print(paste0(coef.esti,'(', CI[1], ', ',CI[2],')'))
+}
+
+# start point
+w = rep(0, 4)
+w[2] = 1
+w[1] = 1
+log_lincomCI(w)
+
+
+
+# number effect
+w = rep(0, 4)
+w[2] = 1
+log_lincomCI(w)
+
+
+# time effect
+w = rep(0, 4)
+w[3] = 1
+log_lincomCI(w)
+
+# divergence effect
+w = rep(0, 4)
+w[4] = 1
+log_lincomCI(w)
+
+```
+
+|      breadth      |    estimate (95% CI)    |  
+|:-----------------:|:-----------------------:|
+|    start point    | 2.5959(1.8056, 3.7322)  |
+|   number effect   | 1.1731(1.1647, 1.1816)  | 
+|    time effect    | 1.1154(1.0437, 1.1919)  | 
+| divergence effect | 0.4447(0.0021, 93.9011) | 
+
+The 95% confidence interval for divergence effect contains 1. It's very large. Therefore, the effect of divergence is not significant.
+
+## Clear Group Analysis
+
+We compare the same two models as before. This time, we only use data from clear group
+```{r}
+neut = neut[neut$group == 'clear', ]
+
+neut_div_breadth_fit = glm(breadth ~ number + days + divergence, data = neut, family = quasipoisson)
+neut_div_breadth_fit_null = glm(breadth ~ number + days, data = neut, family = quasipoisson)
+
+
+extended_rss_glm = summary(neut_div_breadth_fit)$deviance
+extended_df_glm = summary(neut_div_breadth_fit)$df.residual
+
+null_rss_glm = summary(neut_div_breadth_fit_null)$deviance
+null_df_glm= summary(neut_div_breadth_fit_null)$df.residual
+
+f.stat.glm = (null_rss_glm - extended_rss_glm)/(null_df_glm - extended_df_glm)/(extended_rss_glm/extended_df_glm)
+breadth_div_clear_pf = pf(f.stat.glm, null_df_glm - extended_df_glm, extended_df_glm, lower.tail = FALSE)
+```
+The p-value is 0.63, greater than 0.05. Therefore, there is no enough evidence that including divergence in the model significantly improves the prediction.
+
+
+## Prediction
+
+### Expected breadth with divergence in clear group, 500 days of infection(curves and 95% confidence interval for each number of infection)
+
+```{r echo=FALSE}
+div.poi.p <- pois.pred.div1(df = neut, fit.model = neut_div_breadth_fit, upper = 19, lower = 0) +
+  annotate(geom = 'text', x = 0, y = 20, label = 'F-test for extended model with \'divergence\' ', hjust = 0, size = 6) +
+  annotate(geom = 'text', x = 0, y = 18, label = paste('p-value:', round(breadth_div_clear_pf, 2)), hjust = 0, size = 6) 
+
+div.poi.p1 <- pois.pred.div2(df = neut, fit.model = neut_div_breadth_fit, upper = 19, lower = 0, numbers = 1)
+div.poi.p2 <- pois.pred.div2(df = neut, fit.model = neut_div_breadth_fit, upper = 19, lower = 0, numbers = 2)
+div.poi.p3 <- pois.pred.div2(df = neut, fit.model = neut_div_breadth_fit, upper = 19, lower = 0, numbers = 3)
+div.poi.p4 <- pois.pred.div2(df = neut, fit.model = neut_div_breadth_fit, upper = 19, lower = 0, numbers = 4)
+div.poi.p5 <- pois.pred.div2(df = neut, fit.model = neut_div_breadth_fit, upper = 19, lower = 0, numbers = 5)
+
+```
+
+```{r include=FALSE}
+png('breadth_prediction_divergence_clear.png', width = 1440, height = 960)
+plot_grid(div.poi.p, div.poi.p1, div.poi.p2, div.poi.p3, div.poi.p4, div.poi.p5, ncol = 3, labels ='AUTO')
+dev.off()
+
+```
+
+![Breadth Analysis with Divergence Clear Group](breadth_prediction_divergence_clear.png)
+
+
+## Coefficient Table
+```{r, eval=FALSE, include=FALSE}
+
+var.cov = summary(neut_div_breadth_fit)$cov.scaled
+beta = neut_div_breadth_fit$coefficients
+
+
+log_lincomCI = function(w, beta1 = beta, var.cov1 = var.cov){
+  esti = t(w) %*% beta1
+  stderr = t(w) %*% var.cov1 %*% w
+  confidenceinterval = esti[1] + c(-1.96, 1.96)*stderr[1]
+  coef.esti = round(exp(esti[1]),4)
+  CI = exp(confidenceinterval)
+  CI = round(CI, 4)
+  print(paste0(coef.esti,'(', CI[1], ', ',CI[2],')'))
+}
+
+# start point
+w = rep(0, 4)
+w[2] = 1
+w[1] = 1
+log_lincomCI(w)
+
+
+
+# number effect
+w = rep(0, 4)
+w[2] = 1
+log_lincomCI(w)
+
+
+# time effect
+w = rep(0, 4)
+w[3] = 1
+log_lincomCI(w)
+
+# divergence effect
+w = rep(0, 4)
+w[4] = 1
+log_lincomCI(w)
+```
+
+|      breadth      |    estimate (95% CI)    |  
+|:-----------------:|:-----------------------:|
+|    start point    | 2.4681(1.8557, 3.2826)  |
+|   number effect   | 1.1154(1.0437, 1.1919)  | 
+|   time effect     | 1.1731(1.1647, 1.1816)  |
+| divergence effect | 0.4447(0.0021, 93.9011) |
+
+Similarly, he 95% confidence interval for divergence effect contains 1. It's also very large. Therefore, the effect of divergence is not significant.
+
+# Potency Analysis
+
+We use a linear regression model to predict potency of neutralization. The predictors here are the still number of infections and days of infections. The patients are divided into persist group and clear group as well.
+```{r}
+
+# Potency
+neut_potency_lmfit = lm(potency ~ number+days+group, data = neut_data)
+neut_potency_lmfit_null = lm(potency ~ number+days, data = neut_data)
+
+extended_rss_lm = sum(neut_potency_lmfit$residuals^2)
+extended_df_lm = summary(neut_potency_lmfit)$df[2]
+
+null_rss_lm = sum(neut_potency_lmfit_null$residuals^2)
+null_df_lm = summary(neut_potency_lmfit_null)$df[2]
+
+f.stat.lm = (null_rss_lm - extended_rss_lm)/(null_df_lm - extended_df_lm)/(extended_rss_lm/extended_df_lm)
+potency_pf = pf(f.stat.lm, null_df_lm - extended_df_lm, null_df_lm, lower.tail = FALSE)
+potency_pf
+```
+The p-value of F.test is greater than 0.05. In the potency analysis, the group effect is not statistically significant. The following model will be applied for model checking and prediction.
+
+
+\begin{aligned}
+E[potency|number, days, group] = \beta_0 + \beta_1 * number + \beta_2 * days
+\end{aligned}
+
+```{r include=FALSE}
+png('potency_modelchecking.png', width = 480, height = 480)
+ggplot(data = neut_potency_lmfit_null$model, aes(x = neut_potency_lmfit_null$fitted.values, y = summary(neut_potency_lmfit_null)$resid)) +
+  geom_point() +
+  xlab('Fitted value ') +
+  ylab('Residual') +
+  ggtitle('Potency Model Checking') + 
+  theme(text = element_text(size = 16, family = 'sans'))
+dev.off()
+```
+
+![Potency Model Checking](potency_modelchecking.png)
+
+The residuals scattered and well spread.  There are no obvious trend or concentration of the residuals. Therefore, the model fit the data well. 
+
+```{r include=FALSE}
+# Potency lm prediction
+po.lm.pred <- function(df = neut_data, fit.model = neut_potency_fit_null, upper = 100, lower = 0){
+pframe <- unique(with(df,
+             expand.grid(number = seq(min(number),max(number),by=1),
+                         days = seq(min(days, 0),max(days, 25),by=0.02))))
+
+# Potency lm prediction
+predict.potency <- predict(fit.model,newdata = pframe, se.fit = TRUE)
+# Prediction
+pframe$potency = predict.potency$fit
+pframe$potency[pframe$potency > upper] = upper
+
+# 95% CI Upper
+pframe$br.upr = predict.potency$fit + 1.96 * predict.potency$se.fit
+pframe$br.upr[pframe$br.upr < lower] = lower
+pframe$br.upr[pframe$br.upr > upper] = upper
+
+# 95% CI Lower
+pframe$br.lwr = predict.potency$fit - 1.96 * predict.potency$se.fit
+pframe$br.lwr[pframe$br.lwr < lower] = lower
+pframe$br.lwr[pframe$br.lwr > upper] = upper
+
+# Plot of data and prediction, 95% CI
+pp <- ggplot(df, aes(days, potency, col = as.factor(number))) +
+   geom_point() +
+   geom_line(data = pframe, aes(y = potency)) +
+   geom_ribbon(data = pframe, aes(ymin = br.lwr, ymax = br.upr, fill = as.factor(number), color = NULL), alpha = .2, show.legend = FALSE) +
+  labs(color = 'Number of \ninfections') +
+  xlim(0, 25) + 
+  xlab('Days of viremia (100 days/unit)') +
+  ylab('Potency (highest % neutralization)') + 
+  ylim(lower, upper * 1.1) +
+  theme(text = element_text(size = 16, family = 'sans'))
+
+return(pp)
+}
+
+po.lm.pred2 <- function(df = neut_data, fit.model = neut_potency_lmfit_null, upper = 100, lower = 0, numbers = 1){
+pframe <- unique(with(df,
+             expand.grid(number = numbers,
+                         days = seq(min(days, 0),max(days, 25),by=0.02))))
+
+# Potency lm prediction
+predict.potency <- predict(fit.model,newdata = pframe, se.fit = TRUE)
+
+# Prediction
+pframe$potency = predict.potency$fit
+pframe$potency[pframe$potency > upper] = upper
+
+# 95% CI Upper
+pframe$br.upr = predict.potency$fit + 1.96 * predict.potency$se.fit
+pframe$br.upr[pframe$br.upr < lower] = lower
+pframe$br.upr[pframe$br.upr > upper] = upper
+
+# 95% CI Lower
+pframe$br.lwr = predict.potency$fit - 1.96 * predict.potency$se.fit
+pframe$br.lwr[pframe$br.lwr < lower] = lower
+pframe$br.lwr[pframe$br.lwr > upper] = upper
+
+# Plot of data and prediction, 95% CI
+pp <- ggplot(df[df$number == numbers,], aes(days, potency, col = as.factor(numbers))) +
+  geom_point() +
+  geom_line(data = pframe, aes(y = potency)) +
+  geom_ribbon(data = pframe, aes(ymin = br.lwr, ymax = br.upr, fill = as.factor(numbers), color = NULL), alpha = .2, show.legend = FALSE) +
+  labs(color = 'Number of \ninfections') +
+  xlim(0, 25) + 
+  xlab('Days of viremia (100 days/unit)') +
+  ylab('Potency (highest % neutralization)') + 
+  ylim(lower, upper * 1.1) +
+  theme(text = element_text(size = 16, family = 'sans'))
+
+return(pp)
+}
+```
+
+
+### Expected potency(curves and 95% confidence interval for each number of infection)
+
+```{r echo=FALSE}
+
+po.lm.p <- po.lm.pred(df = neut_data, fit.model = neut_potency_lmfit_null, upper = 100, lower = 0) +
+  annotate(geom = 'text', x = 0, y = 110, label = 'F-test for extended model with \'group\' ', hjust = 0, size = 6) +
+  annotate(geom = 'text', x = 0, y = 100, label = paste('p-value:', round(potency_pf, 2)), hjust = 0, size = 6) 
+
+po.lm.p1 <- po.lm.pred2(df = neut_data, fit.model = neut_potency_lmfit_null, upper = 100, lower = 0, numbers = 1)
+po.lm.p2 <- po.lm.pred2(df = neut_data, fit.model = neut_potency_lmfit_null, upper = 100, lower = 0, numbers = 2)
+po.lm.p3 <- po.lm.pred2(df = neut_data, fit.model = neut_potency_lmfit_null, upper = 100, lower = 0, numbers = 3)
+po.lm.p4 <- po.lm.pred2(df = neut_data, fit.model = neut_potency_lmfit_null, upper = 100, lower = 0, numbers = 4)
+po.lm.p5 <- po.lm.pred2(df = neut_data, fit.model = neut_potency_lmfit_null, upper = 100, lower = 0, numbers = 5)
+```
+```{r include=FALSE}
+png('potency_prediction.png', width = 1440, height = 960)
+plot_grid(po.lm.p, po.lm.p1, po.lm.p2, po.lm.p3, po.lm.p4, po.lm.p5, ncol = 3, labels ='AUTO')
+dev.off()
+```
+
+
+![Potency Analysis](potency_prediction.png)
+
+
+
+
+# Potency Analysis with Divergence
+
+Finally, We evaluate the effect of divergence when pedicting potency.
+
+```{r message=FALSE, warning=FALSE}
+neut = read_excel("reinfection_neut_breadth_table_with_divergence.xlsx")
+neut = neut[, 3:8]
+neut = neut[complete.cases(neut),]
+colnames(neut) = c('group', 'days', 'number','divergence','breadth', 'potency')
+neut$days = neut$days/100
+```
+
+
+```{r}
+
+# Potency
+neut_potency_div_lmfit = lm(potency ~ number+days+divergence, data = neut)
+neut_potency_div_lmfit_null = lm(potency ~ number+days, data = neut)
+
+extended_rss_lm = sum(neut_potency_div_lmfit$residuals^2)
+extended_df_lm = summary(neut_potency_div_lmfit)$df[2]
+
+null_rss_lm = sum(neut_potency_div_lmfit_null$residuals^2)
+null_df_lm = summary(neut_potency_div_lmfit_null)$df[2]
+
+f.stat.lm = (null_rss_lm - extended_rss_lm)/(null_df_lm - extended_df_lm)/(extended_rss_lm/extended_df_lm)
+potency_div_pf = pf(f.stat.lm, null_df_lm - extended_df_lm, null_df_lm, lower.tail = FALSE)
+potency_div_pf
+```
+The p-value of F.test is greater than 0.05. In the potency analysis, the group effect is not statistically significant. The following model will be applied for model checking and prediction.
+
+```{r include=FALSE}
+# Potency lm prediction
+po.div.pred <- function(df = neut, fit.model = neut_potency_fit_null, upper = 100, lower = 0){
+pframe <- unique(with(df,
+             expand.grid(number = seq(min(number),max(number),by = 1),
+                         divergence = seq(0, 1,by = 0.01),
+                         days = 5)))
+
+# Potency lm prediction
+predict.potency <- predict(fit.model,newdata = pframe, se.fit = TRUE)
+# Prediction
+pframe$potency = predict.potency$fit
+pframe$potency[pframe$potency > upper] = upper
+
+# 95% CI Upper
+pframe$br.upr = predict.potency$fit + 1.96 * predict.potency$se.fit
+pframe$br.upr[pframe$br.upr < lower] = lower
+pframe$br.upr[pframe$br.upr > upper] = upper
+
+# 95% CI Lower
+pframe$br.lwr = predict.potency$fit - 1.96 * predict.potency$se.fit
+pframe$br.lwr[pframe$br.lwr < lower] = lower
+pframe$br.lwr[pframe$br.lwr > upper] = upper
+
+# Plot of data and prediction, 95% CI
+pp <- ggplot(df, aes(divergence*100, potency, col = as.factor(number))) +
+   geom_point() +
+   geom_line(data = pframe, aes(y = potency)) +
+   geom_ribbon(data = pframe, aes(ymin = br.lwr, ymax = br.upr, fill = as.factor(number), color = NULL), alpha = .2, show.legend = FALSE) +
+  labs(color = 'Number of \ninfections') +
+  xlim(0, 100) + 
+  xlab('Divergence from infection 1 T/F (%)') +
+  ylab('Potency (highest % neutralization)') + 
+  ylim(lower, upper * 1.1) +
+  theme(text = element_text(size = 16, family = 'sans'))
+
+return(pp)
+}
+
+po.div.pred2 <- function(df = neut, fit.model = neut_potency_div_lmfit_null, upper = 100, lower = 0, numbers = 1){
+pframe <- unique(with(df,
+             expand.grid(number = numbers,
+                         divergence = seq(0, 1,by = 0.01),
+                         days = 5)))
+
+# Potency lm prediction
+predict.potency <- predict(fit.model,newdata = pframe, se.fit = TRUE)
+
+# Prediction
+pframe$potency = predict.potency$fit
+pframe$potency[pframe$potency > upper] = upper
+
+# 95% CI Upper
+pframe$br.upr = predict.potency$fit + 1.96 * predict.potency$se.fit
+pframe$br.upr[pframe$br.upr < lower] = lower
+pframe$br.upr[pframe$br.upr > upper] = upper
+
+# 95% CI Lower
+pframe$br.lwr = predict.potency$fit - 1.96 * predict.potency$se.fit
+pframe$br.lwr[pframe$br.lwr < lower] = lower
+pframe$br.lwr[pframe$br.lwr > upper] = upper
+
+# Plot of data and prediction, 95% CI
+pp <- ggplot(df[df$number == numbers,], aes(divergence*100, potency, col = as.factor(numbers))) +
+  geom_point() +
+  geom_line(data = pframe, aes(y = potency)) +
+  geom_ribbon(data = pframe, aes(ymin = br.lwr, ymax = br.upr, fill = as.factor(numbers), color = NULL), alpha = .2, show.legend = FALSE) +
+  labs(color = 'Number of \ninfections') +
+  xlim(0, 100) + 
+  xlab('Divergence from infection 1 T/F (%)') +
+  ylab('Potency (highest % neutralization)') + 
+  ylim(lower, upper * 1.1) +
+  theme(text = element_text(size = 16, family = 'sans'))
+
+return(pp)
+}
+```
+
+
+### Expected potency(curves and 95% confidence interval for each number of infection)
+
+```{r echo=FALSE}
+po.div.p <- po.div.pred(df = neut, fit.model = neut_potency_div_lmfit, upper = 100, lower = 0) +
+  annotate(geom = 'text', x = 0, y = 110, label = 'F-test for extended model with \'divergence\' ', hjust = 0, size = 6) +
+  annotate(geom = 'text', x = 0, y = 100, label = paste('p-value:', round(potency_pf, 2)), hjust = 0, size = 6) 
+
+po.div.p1 <- po.div.pred2(df = neut, fit.model = neut_potency_div_lmfit, upper = 100, lower = 0, numbers = 1)
+po.div.p2 <- po.div.pred2(df = neut, fit.model = neut_potency_div_lmfit, upper = 100, lower = 0, numbers = 2)
+po.div.p3 <- po.div.pred2(df = neut, fit.model = neut_potency_div_lmfit, upper = 100, lower = 0, numbers = 3)
+po.div.p4 <- po.div.pred2(df = neut, fit.model = neut_potency_div_lmfit, upper = 100, lower = 0, numbers = 4)
+po.div.p5 <- po.div.pred2(df = neut, fit.model = neut_potency_div_lmfit, upper = 100, lower = 0, numbers = 5)
+
+```
+```{r include=FALSE}
+png('potency_prediction_divergence_all.png', width = 1440, height = 960)
+plot_grid(po.div.p, po.div.p1, po.div.p2, po.div.p3, po.div.p4, po.div.p5, ncol = 3, labels ='AUTO')
+dev.off()
+```
+
+![Potency Analysis with Divergence All Group](potency_prediction_divergence_all.png)
+
+```{r}
+summary(neut_potency_div_lmfit_null)
+```
+
+## Coefficient Table
+```{r, eval=FALSE, include=FALSE}
+
+
+var.cov = summary(neut_potency_div_lmfit)$cov
+beta = neut_potency_div_lmfit$coefficients
+
+
+lincomCI = function(w, beta1 = beta, var.cov1 = var.cov){
+  esti = t(w) %*% beta1
+  stderr = t(w) %*% var.cov1 %*% w
+  confidenceinterval = esti[1] + c(-1.96, 1.96)*stderr[1]
+  coef.esti = round(esti[1],4)
+  CI = confidenceinterval
+  CI = round(CI, 4)
+  print(paste0(coef.esti,'(', CI[1], ', ',CI[2],')'))
+}
+
+
+# start point
+w = rep(0, 4)
+w[2] = 1
+w[1] = 1
+lincomCI(w)
+
+
+
+# number effect
+w = rep(0, 4)
+w[2] = 1
+lincomCI(w)
+
+
+# time effect
+w = rep(0, 4)
+w[3] = 1
+lincomCI(w)
+
+# divergence effect
+w = rep(0, 4)
+w[4] = 1
+lincomCI(w)
+
+
+```
+
+
+|  potency with divergence all group  |      estimate (95% CI)          |
+|:-----------------------------------:|:-------------------------------:|
+|             start point             |    31.745(31.599, 31.8911)      |
+|            number effect            |     4.0478(3.9685, 4.127)       |
+|             time effect             |     2.6642(2.6612, 2.6672)      |
+|          divergence effect          |    -8.3415(-13.5342, -3.1489)   |
+
+
+
+## Clear Group Analysis
+
+We compare the same two models as before. This time, we only use data from clear group
+```{r}
+
+neut = neut[neut$group == 'clear', ]
+# Potency
+neut_potency_div_lmfit = lm(potency ~ number+days+divergence, data = neut)
+neut_potency_div_lmfit_null = lm(potency ~ number+days, data = neut)
+
+extended_rss_lm = sum(neut_potency_div_lmfit$residuals^2)
+extended_df_lm = summary(neut_potency_div_lmfit)$df[2]
+
+null_rss_lm = sum(neut_potency_div_lmfit_null$residuals^2)
+null_df_lm = summary(neut_potency_div_lmfit_null)$df[2]
+
+f.stat.lm = (null_rss_lm - extended_rss_lm)/(null_df_lm - extended_df_lm)/(extended_rss_lm/extended_df_lm)
+potency_div_pf = pf(f.stat.lm, null_df_lm - extended_df_lm, null_df_lm, lower.tail = FALSE)
+potency_div_pf
+```
+
+
+### Expected potency(curves and 95% confidence interval for each number of infection)
+
+```{r echo=FALSE}
+po.div.p <- po.div.pred(df = neut, fit.model = neut_potency_div_lmfit, upper = 100, lower = 0) +
+  annotate(geom = 'text', x = 0, y = 110, label = 'F-test for extended model with \'divergence\' ', hjust = 0, size = 6) +
+  annotate(geom = 'text', x = 0, y = 100, label = paste('p-value:', round(potency_pf, 2)), hjust = 0, size = 6)
+
+po.div.p1 <- po.div.pred2(df = neut, fit.model = neut_potency_div_lmfit, upper = 100, lower = 0, numbers = 1)
+po.div.p2 <- po.div.pred2(df = neut, fit.model = neut_potency_div_lmfit, upper = 100, lower = 0, numbers = 2)
+po.div.p3 <- po.div.pred2(df = neut, fit.model = neut_potency_div_lmfit, upper = 100, lower = 0, numbers = 3)
+po.div.p4 <- po.div.pred2(df = neut, fit.model = neut_potency_div_lmfit, upper = 100, lower = 0, numbers = 4)
+po.div.p5 <- po.div.pred2(df = neut, fit.model = neut_potency_div_lmfit, upper = 100, lower = 0, numbers = 5)
+
+```
+
+
+```{r include=FALSE}
+png('potency_prediction_divergence_clear.png', width = 1440, height = 960)
+plot_grid(po.div.p, po.div.p1, po.div.p2, po.div.p3, po.div.p4, po.div.p5, ncol = 3, labels ='AUTO')
+dev.off()
+```
+
+![Potency Analysis with Divergence Clear Group](potency_prediction_divergence_clear.png)
+
+
+```{r}
+summary(neut_potency_div_lmfit_null)
+```
+
+
+## Coefficient Table
+```{r, eval=FALSE, include=FALSE}
+
+var.cov = summary(neut_potency_div_lmfit)$cov
+beta = neut_potency_div_lmfit$coefficients
+
+
+lincomCI = function(w, beta1 = beta, var.cov1 = var.cov){
+  esti = t(w) %*% beta1
+  stderr = t(w) %*% var.cov1 %*% w
+  confidenceinterval = esti[1] + c(-1.96, 1.96)*stderr[1]
+  coef.esti = round(esti[1],4)
+  CI = confidenceinterval
+  CI = round(CI, 4)
+  print(paste0(coef.esti,'(', CI[1], ', ',CI[2],')'))
+}
+
+
+# start point
+w = rep(0, 4)
+w[2] = 1
+w[1] = 1
+lincomCI(w)
+
+
+
+# number effect
+w = rep(0, 4)
+w[2] = 1
+lincomCI(w)
+
+
+# time effect
+w = rep(0, 4)
+w[3] = 1
+lincomCI(w)
+
+# divergence effect
+w = rep(0, 4)
+w[4] = 1
+lincomCI(w)
+
+
+```
+
+
+| potency with divergence clear group |      estimate (95% CI)         |
+|:-----------------------------------:|:------------------------------:|
+|             start point             |    29.7951(29.6363, 29.954)    |
+|            number effect            |     2.9507(2.8543, 3.047)      |
+|             time effect             |     3.8658(3.8587, 3.8729)     |
+|          divergence effect          |   -14.8169(-20.3682, -9.2655)  |
+
+
+
+
+
+

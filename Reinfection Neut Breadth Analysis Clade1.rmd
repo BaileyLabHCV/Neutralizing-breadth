@@ -1,0 +1,184 @@
+---
+title: "Neut Analysis Clade(clade1)"
+author: "Tingchang Wang"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Read in data and group by outcome
+```{r message=FALSE, warning=FALSE}
+library(readxl)
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+library(cowplot)
+neut0111 <- read_excel("clade data updated.xlsx")
+colnames(neut0111) <- gsub(" ", "_", variable.names(neut0111))
+
+neut0111 %>% 
+  mutate(group = as.numeric(Outcome_of_infxn == 'persist')) %>%
+  select(c(Days_of_infxn, "#_of_diff_infxns", "#_of_infxns_from_clade_1", Breadth, Potency, group)) -> neut_data
+colnames(neut_data) <- c('days', 'number', 'number_from_clade1', 'breadth', 'potency', 'group')
+neut_data$days = neut_data$days/100
+```
+
+# Include '#_of_infxns_from_clade_1' into the model
+
+## Poisson Regression and Model Selection
+
+We compare two poisson models:
+
+\begin{aligned}
+& Extended\  model: \\
+
+&log(E[breadth|number, days, group]) = \beta_0 + \beta_1 * number + \beta_2 * days + \beta_3 * number\ from\ clade1 + \beta_4 * group \\
+
+& Null\  model: \\
+
+&log(E[breadth|number, days, group]) = \beta_0 + \beta_1 * number + \beta_2 * days + \beta_3 * number\ from\ clade1 \\
+
+\end{aligned}
+```{r}
+neut_breadth_fit = glm(breadth ~ number+days+number_from_clade1+group, data = neut_data, family = quasipoisson)
+neut_breadth_fit_null = glm(breadth ~ number+days+number_from_clade1, data = neut_data, family = quasipoisson)
+
+extended_rss_glm = summary(neut_breadth_fit)$deviance
+extended_df_glm = summary(neut_breadth_fit)$df.residual
+
+null_rss_glm = summary(neut_breadth_fit_null)$deviance
+null_df_glm = summary(neut_breadth_fit_null)$df.residual
+
+f.stat.glm = (null_rss_glm - extended_rss_glm)/(null_df_glm - extended_df_glm)/(extended_rss_glm/extended_df_glm)
+breadth.pf = pf(f.stat.glm, null_df_glm - extended_df_glm, null_df_glm, lower.tail = FALSE)
+breadth.pf
+```
+
+The F-test of the two model has a p-value of 0.68 > 0.05. This indicates that the null model is better and group effect is not significant. We will use the null model to predict breadth.
+
+## Model Checking
+```{r}
+png('breadth_modelchecking-clade1.png', width = 480, height = 480)
+ggplot(data = neut_breadth_fit_null$model, aes(x = neut_breadth_fit_null$fitted.values, y = summary(neut_breadth_fit_null)$deviance.resid)) +
+    geom_point() +
+    xlab('Fitted value ') +
+    ylab('Residual') +
+    ggtitle('Breadth Model Checking (Poisson)') + 
+    theme(text = element_text(size = 16, family = 'sans')) +
+    ylim(-12, 12)
+dev.off()
+```
+
+
+
+![](breadth_modelchecking-clade1.png)
+
+
+
+```{r, eval=TRUE, include=FALSE}
+pois.pred <- function(df = neut_data, fit.model = neut_breadth_fit_null, upper = 19, lower = 0, numbers = 1){
+pframe <- unique(with(df,
+             expand.grid(days = seq(min(days, 0),max(days, 25),by = 0.02),
+                         number_from_clade1 = seq(min(number_from_clade1), max(number_from_clade1), by = 1),
+                         number = numbers)))
+# Breadth glm prediction 
+predict.breadth <- predict(fit.model,newdata=pframe, se.fit=TRUE, type = 'response')
+
+# Prediction
+pframe$breadth = predict.breadth$fit
+pframe$breadth[pframe$breadth > upper] = upper
+
+# 95% CI Upper 
+pframe$br.upr = predict.breadth$fit + 1.96 * predict.breadth$se.fit
+pframe$br.upr[pframe$br.upr > upper] = upper
+pframe$br.upr[pframe$br.upr < lower] = lower
+
+# 95% CI Lower 
+pframe$br.lwr = predict.breadth$fit - 1.96 * predict.breadth$se.fit
+pframe$br.lwr[pframe$br.lwr > upper] = upper
+pframe$br.lwr[pframe$br.lwr < lower] = lower
+
+# Plot of data and prediction, 95% CI
+pp <- ggplot(df[df$number == numbers, ], aes(days, breadth, col = as.factor(number_from_clade1))) +
+   geom_point() +
+   geom_line(data = pframe, aes(y = breadth)) +
+  geom_ribbon(data = pframe, aes(ymin = br.lwr, ymax = br.upr, fill = as.factor(number_from_clade1), color = NULL), alpha = .2, show.legend = FALSE) +
+  labs(color = 'Number of infections \nfrom clade 1') +
+  xlim(0, 25) + 
+  xlab('Days of viremia (100 days/unit)') +
+  ylab('Breadth (# of HCVpp neutralized > 25%)') + 
+  ylim(lower, upper * 1.1) +
+  ggtitle(paste('Number =', numbers)) + 
+  theme(text = element_text(size = 16, family = 'sans'))
+
+return(pp)
+}
+```
+
+```{r}
+br.poi.p1.1 <- pois.pred(df = neut_data, fit.model = neut_breadth_fit_null, upper = 19, lower = 0, numbers = 1)
+br.poi.p1.2 <- pois.pred(df = neut_data, fit.model = neut_breadth_fit_null, upper = 19, lower = 0, numbers = 2)
+br.poi.p1.3 <- pois.pred(df = neut_data, fit.model = neut_breadth_fit_null, upper = 19, lower = 0, numbers = 3)
+br.poi.p1.4 <- pois.pred(df = neut_data, fit.model = neut_breadth_fit_null, upper = 19, lower = 0, numbers = 4)
+png('breadth_prediction-clade1.png', width = 960, height = 1440)
+plot_grid(br.poi.p1.1, br.poi.p1.2, br.poi.p1.3, br.poi.p1.4, ncol = 2, labels ='AUTO')
+dev.off()
+```
+
+![](breadth_prediction-clade1.png)
+
+
+
+
+```{r, eval=FALSE, include=FALSE}
+
+var.cov = summary(neut_breadth_fit_null)$cov.scaled
+beta = neut_breadth_fit_null$coefficients
+
+
+log_lincomCI = function(w, beta1 = beta, var.cov1 = var.cov){
+  esti = t(w) %*% beta1
+  stderr = t(w) %*% var.cov1 %*% w
+  confidenceinterval = esti[1] + c(-1.96, 1.96)*stderr[1]
+  coef.esti = round(exp(esti[1]),4)
+  CI = exp(confidenceinterval)
+  CI = round(CI, 4)
+  print(paste0(coef.esti,'(', CI[1], ', ',CI[2],')'))
+}
+
+# start point
+w = rep(0, 4)
+w[2] = 1
+w[1] = 1
+log_lincomCI(w)
+
+# number effect
+w = rep(0, 4)
+w[2] = 1
+log_lincomCI(w)
+
+# time effect
+w = rep(0, 4)
+w[3] = 1
+log_lincomCI(w)
+
+# clade effect
+w = rep(0, 4)
+w[4] = 1
+log_lincomCI(w)
+```
+
+
+## Coefficient Table 
+|    breadth    |    estimate (95% CI)   |
+|:-------------:|:----------------------:|
+|  start point  | 1.903(1.5965, 2.2682)  |
+| number effect | 1.2526(1.1561, 1.3571) |
+|  time effect  | 1.0639(1.0626, 1.0652) |
+|  clade effect | 1.6591(1.5702, 1.7531) |
+
+
+

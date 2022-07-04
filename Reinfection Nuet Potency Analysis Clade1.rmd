@@ -1,0 +1,185 @@
+---
+title: "Neut Breadth Analysis Clade(clade1)"
+author: "Tingchang Wang"
+date: "1/24/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Read in data and group by outcome
+```{r message=FALSE, warning=FALSE}
+library(readxl)
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+library(cowplot)
+neut0111 <- read_excel("clade data updated.xlsx")
+colnames(neut0111) <- gsub(" ", "_", variable.names(neut0111))
+
+neut0111 %>% 
+  mutate(group = as.numeric(Outcome_of_infxn == 'persist')) %>%
+  select(c(Days_of_infxn, "#_of_diff_infxns", "#_of_infxns_from_clade_1", Breadth, Potency, group)) -> neut_data
+colnames(neut_data) <- c('days', 'number', 'number_from_clade1', 'breadth', 'potency', 'group')
+neut_data$days = neut_data$days/100
+```
+
+# Include '#_of_infxns_from_clade_1' into the model
+
+## Poisson Regression and Model Selection
+
+We compare two poisson models:
+
+\begin{aligned}
+& Extended\  model: \\
+
+&E[Potency|number, days, group] = \beta_0 + \beta_1 * number + \beta_2 * days + \beta_3 * number\ from\ clade1 + \beta_4 * group \\
+
+& Null\  model: \\
+
+&E[Potency|number, days, group] = \beta_0 + \beta_1 * number + \beta_2 * days + \beta_3 * number\ from\ clade1 \\
+
+\end{aligned}
+```{r}
+neut_potency_fit = lm(potency ~ number+days+number_from_clade1+group, data = neut_data)
+neut_potency_fit_null = lm(potency ~ number+days+number_from_clade1, data = neut_data)
+
+extended_rss_lm = sum(neut_potency_fit$residuals^2)
+extended_df_lm = summary(neut_potency_fit)$df[2]
+
+null_rss_lm = sum(neut_potency_fit_null$residuals^2)
+null_df_lm = summary(neut_potency_fit_null)$df[2]
+
+f.stat.lm = (null_rss_lm - extended_rss_lm)/(null_df_lm - extended_df_lm)/(extended_rss_lm/extended_df_lm)
+potency.pf = pf(f.stat.lm, null_df_lm - extended_df_lm, null_df_lm, lower.tail = FALSE)
+potency.pf
+```
+
+The F-test of the two model has a p-value of 0.28 > 0.05. This indicates that the null model is better and group effect is not significant. We will use the null model to predict potency.
+
+## Model Checking
+```{r}
+png('potency_modelchecking-clade1.png', width = 480, height = 480)
+ggplot(data = neut_potency_fit_null$model, aes(x = neut_potency_fit_null$fitted.values, y = summary(neut_potency_fit_null)$residual)) +
+    geom_point() +
+    xlab('Fitted value ') +
+    ylab('Residual') +
+    ggtitle('Potency Model Checking (Poisson)') + 
+    theme(text = element_text(size = 16, family = 'sans')) +
+    ylim(-12, 12)
+dev.off()
+```
+
+
+
+![](potency_modelchecking-clade1.png)
+
+
+
+```{r, eval=TRUE, include=FALSE}
+lm.pred <- function(df = neut_data, fit.model = neut_potency_fit_null, upper = 100, lower = 0, numbers = 1){
+pframe <- unique(with(df,
+             expand.grid(days = seq(min(days, 0),max(days, 25),by = 0.02),
+                         number_from_clade1 = seq(min(number_from_clade1), max(number_from_clade1), by = 1),
+                         number = numbers)))
+# potency glm prediction 
+predict.potency <- predict(fit.model,newdata=pframe, se.fit=TRUE)
+
+# Prediction
+pframe$potency = predict.potency$fit
+pframe$potency[pframe$potency > upper] = upper
+
+# 95% CI Upper 
+pframe$br.upr = predict.potency$fit + 1.96 * predict.potency$se.fit
+pframe$br.upr[pframe$br.upr > upper] = upper
+pframe$br.upr[pframe$br.upr < lower] = lower
+
+# 95% CI Lower 
+pframe$br.lwr = predict.potency$fit - 1.96 * predict.potency$se.fit
+pframe$br.lwr[pframe$br.lwr > upper] = upper
+pframe$br.lwr[pframe$br.lwr < lower] = lower
+
+# Plot of data and prediction, 95% CI
+pp <- ggplot(df[df$number == numbers, ], aes(days, potency, col = as.factor(number_from_clade1))) +
+   geom_point() +
+   geom_line(data = pframe, aes(y = potency)) +
+  geom_ribbon(data = pframe, aes(ymin = br.lwr, ymax = br.upr, fill = as.factor(number_from_clade1), color = NULL), alpha = .2, show.legend = FALSE) +
+  labs(color = 'Number of infections \nfrom clade 1') +
+  xlim(0, 25) + 
+  xlab('Days of viremia (100 days/unit)') +
+  ylab('potency (highest % neutralization)') + 
+  ylim(lower, upper * 1.1) +
+  ggtitle(paste('Number =', numbers)) + 
+  theme(text = element_text(size = 16, family = 'sans'))
+
+return(pp)
+}
+```
+
+```{r}
+br.poi.p1.1 <- lm.pred(df = neut_data, fit.model = neut_potency_fit_null, upper = 100, lower = 0, numbers = 1)
+br.poi.p1.2 <- lm.pred(df = neut_data, fit.model = neut_potency_fit_null, upper = 100, lower = 0, numbers = 2)
+br.poi.p1.3 <- lm.pred(df = neut_data, fit.model = neut_potency_fit_null, upper = 100, lower = 0, numbers = 3)
+br.poi.p1.4 <- lm.pred(df = neut_data, fit.model = neut_potency_fit_null, upper = 100, lower = 0, numbers = 4)
+png('potency_prediction-clade1.png', width = 960, height = 1440)
+plot_grid(br.poi.p1.1, br.poi.p1.2, br.poi.p1.3, br.poi.p1.4, ncol = 2, labels ='AUTO')
+dev.off()
+```
+
+![](potency_prediction-clade1.png)
+
+
+
+
+```{r, eval=FALSE, include=FALSE}
+
+var.cov = summary(neut_potency_fit_null)$cov
+beta = neut_potency_fit_null$coefficients
+
+
+lincomCI = function(w, beta1 = beta, var.cov1 = var.cov){
+  esti = t(w) %*% beta1
+  stderr = t(w) %*% var.cov1 %*% w
+  confidenceinterval = esti[1] + c(-1.96, 1.96)*stderr[1]
+  coef.esti = round(esti[1],4)
+  CI = confidenceinterval
+  CI = round(CI, 4)
+  print(paste0(coef.esti,'(', CI[1], ', ',CI[2],')'))
+}
+
+# start point
+w = rep(0, 4)
+w[2] = 1
+w[1] = 1
+lincomCI(w)
+
+# number effect
+w = rep(0, 4)
+w[2] = 1
+lincomCI(w)
+
+# time effect
+w = rep(0, 4)
+w[3] = 1
+lincomCI(w)
+
+# clade effect
+w = rep(0, 4)
+w[4] = 1
+lincomCI(w)
+```
+
+
+## Coefficient Table 
+
+|    potency    |      estimate (95% CI)     |
+|:-------------:|:--------------------------:|
+|  start point  | 21.1431(20.9641, 21.3222)  |
+| number effect |   5.0744(4.8845, 5.2643)   |
+|  time effect  |   2.0163(2.0122, 2.0204)   |
+|  clade effect |  16.5389(16.3804, 16.6974) |
+
+
+
